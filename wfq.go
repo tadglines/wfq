@@ -227,6 +227,10 @@ type Queue struct {
 
 // Create a new Queue instance.
 // If maxFlowSize > maxQueueSize or if helper is nil then it will panic.
+// The maxFlowSize value limits the total size of all items that can be queued in a single flow.
+// The maxQueueSize value limits the total size of all items that can be in the queue.
+// It is recomeneded that maxQueueSize be set to maxFlowSize*<Max # of flows>, and
+// maxFlowSize must be larger than the largest item ti be placed in the queue.
 //
 func NewQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *Queue {
 	if maxFlowSize > maxQueueSize {
@@ -250,6 +254,7 @@ func NewQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *Queue {
 // Place on item on the queue. Queue will not return (i.e. block) until the item can be placed on the queue
 // or the queue was closed. If Queue returns true, then DeQueue will eventually return the item.
 // If Queue returns false, then the item was not placed on the queue because the queue has been closed.
+// Queue will panic if the size of the item is greater then maxFlowSize (set in NewQueue).
 // Queue is safe for concurrent use.
 //
 func (q *Queue) Queue(item interface{}) bool {
