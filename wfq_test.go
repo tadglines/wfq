@@ -32,7 +32,7 @@ func (h *helper) Weight(i interface{}) uint8 {
 
 func TestSingleFlow(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewWeightedFairQueue(1000, 10, &helper{})
+	wfq := NewQueue(1000, 10, &helper{})
 
 	go func() {
 		for i := 1; i < 10000; i++ {
@@ -57,7 +57,7 @@ func TestSingleFlow(t *testing.T) {
 
 func TestMultiFlow(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewWeightedFairQueue(100, 10, &helper{})
+	wfq := NewQueue(100, 10, &helper{})
 
 	var swg sync.WaitGroup
 	var wg sync.WaitGroup
@@ -141,7 +141,7 @@ func TestMultiFlow(t *testing.T) {
 
 func TestMultiFlowWeighted(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewWeightedFairQueue(1000, 12, &helper{})
+	wfq := NewQueue(1000, 12, &helper{})
 
 	var wg sync.WaitGroup
 	numFlows := 10
@@ -197,7 +197,7 @@ func TestMultiFlowWeighted(t *testing.T) {
 
 func TestMultiFlowMultiWeight(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewWeightedFairQueue(100, 10, &helper{})
+	wfq := NewQueue(100, 10, &helper{})
 
 	var swg sync.WaitGroup
 	var wg sync.WaitGroup
@@ -240,7 +240,7 @@ func TestMultiFlowMultiWeight(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewWeightedFairQueue(100, 10, &helper{})
+	wfq := NewQueue(100, 10, &helper{})
 
 	var wg sync.WaitGroup
 	wg.Add(1)

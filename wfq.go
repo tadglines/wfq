@@ -10,7 +10,7 @@ import (
  *
  *****************************************************************************/
 
-// An implementatino of this interface is passed to NewWeightedFairQueue
+// An implementatino of this interface is passed to NewQueue
 // and used to obtain properties of items passed to Queue().
 // Each method will be called only once per Queue()/item call
 //
@@ -35,7 +35,7 @@ type Interface interface {
  *
  *****************************************************************************/
 
-type queueItem struct {
+type heapItem struct {
 	fi     *flowInfo
 	value  interface{}
 	size   uint64
@@ -44,50 +44,50 @@ type queueItem struct {
 	vft    uint64
 }
 
-var qi_pool sync.Pool
+var hi_pool sync.Pool
 
-func newQueueItem() interface{} {
-	return new(queueItem)
+func newHeapItem() interface{} {
+	return new(heapItem)
 }
 
-func getQueueItem() *queueItem {
-	return qi_pool.Get().(*queueItem)
+func getHeapItem() *heapItem {
+	return hi_pool.Get().(*heapItem)
 }
 
-func putQueueItem(qi *queueItem) {
-	qi.fi = nil
-	qi.value = nil
-	qi_pool.Put(qi)
+func putHeapItem(hi *heapItem) {
+	hi.fi = nil
+	hi.value = nil
+	hi_pool.Put(hi)
 }
 
 /*****************************************************************************
  *
  *****************************************************************************/
 
-type itemQueue []*queueItem
+type itemHeap []*heapItem
 
-func (q *itemQueue) Len() int {
-	return len(*q)
+func (h *itemHeap) Len() int {
+	return len(*h)
 }
 
-func (q *itemQueue) Less(i, j int) bool {
-	return (*q)[i].vft < (*q)[j].vft
+func (h *itemHeap) Less(i, j int) bool {
+	return (*h)[i].vft < (*h)[j].vft
 }
 
-func (q *itemQueue) Swap(i, j int) {
-	(*q)[i], (*q)[j] = (*q)[j], (*q)[i]
+func (h *itemHeap) Swap(i, j int) {
+	(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
 }
 
-func (q *itemQueue) Push(x interface{}) {
-	item := x.(*queueItem)
-	*q = append(*q, item)
+func (h *itemHeap) Push(x interface{}) {
+	item := x.(*heapItem)
+	*h = append(*h, item)
 }
 
-func (q *itemQueue) Pop() interface{} {
-	old := *q
+func (h *itemHeap) Pop() interface{} {
+	old := *h
 	n := len(old)
 	item := old[n-1]
-	*q = old[0 : n-1]
+	*h = old[0 : n-1]
 	old[n-1] = nil
 	return item
 }
@@ -96,66 +96,66 @@ func (q *itemQueue) Pop() interface{} {
  *
  *****************************************************************************/
 
-type overflowQueueItem struct {
-	qi     *queueItem
+type overflowHeapItem struct {
+	hi     *heapItem
 	arrord uint64
 	wg     sync.WaitGroup
 }
 
-func (i *overflowQueueItem) less(o *overflowQueueItem) bool {
-	if i.qi.weight > o.qi.weight {
+func (i *overflowHeapItem) less(o *overflowHeapItem) bool {
+	if i.hi.weight > o.hi.weight {
 		return true
-	} else if i.qi.weight == o.qi.weight && i.arrord < o.arrord {
+	} else if i.hi.weight == o.hi.weight && i.arrord < o.arrord {
 		return true
 	}
 	return false
 }
 
-var oqi_pool sync.Pool
+var ohi_pool sync.Pool
 
-func newOverflowQueueItem() interface{} {
-	return new(overflowQueueItem)
+func newOverflowHeapItem() interface{} {
+	return new(overflowHeapItem)
 }
 
-func getOverflowQueueItem() *overflowQueueItem {
-	return oqi_pool.Get().(*overflowQueueItem)
+func getOverflowHeapItem() *overflowHeapItem {
+	return ohi_pool.Get().(*overflowHeapItem)
 }
 
-func putOverflowQueueItem(oqi *overflowQueueItem) {
-	oqi.qi = nil
-	oqi_pool.Put(oqi)
+func putOverflowHeapItem(ohi *overflowHeapItem) {
+	ohi.hi = nil
+	ohi_pool.Put(ohi)
 }
 
 /*****************************************************************************
  *
  *****************************************************************************/
 
-type itemOverflowQueue []*overflowQueueItem
+type itemOverflowHeap []*overflowHeapItem
 
-func (q *itemOverflowQueue) Len() int {
-	return len(*q)
+func (h *itemOverflowHeap) Len() int {
+	return len(*h)
 }
 
-func (q *itemOverflowQueue) Less(i, j int) bool {
-	return (*q)[i].less((*q)[j])
+func (h *itemOverflowHeap) Less(i, j int) bool {
+	return (*h)[i].less((*h)[j])
 }
 
-func (q *itemOverflowQueue) Swap(i, j int) {
-	(*q)[i], (*q)[j] = (*q)[j], (*q)[i]
+func (h *itemOverflowHeap) Swap(i, j int) {
+	(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
 }
 
-func (q *itemOverflowQueue) Push(x interface{}) {
-	item := x.(*overflowQueueItem)
-	*q = append(*q, item)
+func (h *itemOverflowHeap) Push(x interface{}) {
+	item := x.(*overflowHeapItem)
+	*h = append(*h, item)
 }
 
-func (q *itemOverflowQueue) Pop() interface{} {
-	old := *q
+func (h *itemOverflowHeap) Pop() interface{} {
+	old := *h
 	n := len(old)
-	oqi := old[n-1]
-	*q = old[0 : n-1]
+	ohi := old[n-1]
+	*h = old[0 : n-1]
 	old[n-1] = nil
-	return oqi
+	return ohi
 }
 
 /*****************************************************************************
@@ -188,8 +188,8 @@ func putFlowInfo(fi *flowInfo) {
  *****************************************************************************/
 
 func init() {
-	qi_pool.New = newQueueItem
-	oqi_pool.New = newOverflowQueueItem
+	hi_pool.New = newHeapItem
+	ohi_pool.New = newOverflowHeapItem
 	fi_pool.New = newFlowInfo
 }
 
@@ -209,35 +209,35 @@ func init() {
 // The actual wieghted cost of an item is calculated as C = (S * 256) / (1 + W)
 // where S = the size of the item, and W = the weight of the item.
 //
-type WeightedFairQueue struct {
+type Queue struct {
 	lock         sync.Mutex
 	cond         sync.Cond
 	closed       bool
 	maxQueueSize uint64
 	maxFlowSize  uint64
 	helper       Interface
-	items        itemQueue
-	overflow     itemOverflowQueue
-	next_oi      *overflowQueueItem
+	items        itemHeap
+	overflow     itemOverflowHeap
+	next_ohi     *overflowHeapItem
 	flows        map[uint64]*flowInfo
 	ovfcnt       uint64
 	vt           uint64
 	size         uint64
 }
 
-// Create a new WeightedFairQueue instance.
+// Create a new Queue instance.
 // If maxFlowSize > maxQueueSize or if helper is nil then it will panic.
 //
-func NewWeightedFairQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *WeightedFairQueue {
+func NewQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *Queue {
 	if maxFlowSize > maxQueueSize {
 		panic("MaxFlowSize > MaxQueueSize")
 	}
 
 	if helper == nil {
-		panic("h is nil")
+		panic("helper is nil")
 	}
 
-	q := new(WeightedFairQueue)
+	q := new(Queue)
 	q.cond.L = &q.lock
 	q.maxQueueSize = maxQueueSize
 	q.maxFlowSize = maxFlowSize
@@ -252,14 +252,14 @@ func NewWeightedFairQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *W
 // If Queue returns false, then the item was not placed on the queue because the queue has been closed.
 // Queue is safe for concurrent use.
 //
-func (q *WeightedFairQueue) Queue(item interface{}) bool {
-	qi := getQueueItem()
-	qi.value = item
-	qi.key = q.helper.Key(item)
-	qi.size = q.helper.Size(item)
-	qi.weight = q.helper.Weight(item)
+func (q *Queue) Queue(item interface{}) bool {
+	hi := getHeapItem()
+	hi.value = item
+	hi.key = q.helper.Key(item)
+	hi.size = q.helper.Size(item)
+	hi.weight = q.helper.Weight(item)
 
-	if qi.size > q.maxFlowSize {
+	if hi.size > q.maxFlowSize {
 		panic("Item size is larger than MaxFlowSize")
 	}
 
@@ -271,21 +271,21 @@ func (q *WeightedFairQueue) Queue(item interface{}) bool {
 	}
 
 	// Get the flowInfo, or add one if there is none
-	fi, ok := q.flows[qi.key]
+	fi, ok := q.flows[hi.key]
 	if !ok {
 		fi = getFlowInfo()
 		fi.cond.L = &q.lock
 		fi.last_vft = q.vt
-		q.flows[qi.key] = fi
+		q.flows[hi.key] = fi
 	}
-	qi.fi = fi
+	hi.fi = fi
 
 	// This prevents DeQueue from deleting the flowInfo from q.flows
 	// while the flow is till active
-	fi.pendSize += qi.size
+	fi.pendSize += hi.size
 
 	// Wait till there is room in the flow queue
-	for !q.closed && fi.size+qi.size > q.maxFlowSize {
+	for !q.closed && fi.size+hi.size > q.maxFlowSize {
 		fi.cond.Wait()
 	}
 
@@ -295,15 +295,15 @@ func (q *WeightedFairQueue) Queue(item interface{}) bool {
 	}
 
 	// Calculate the items virtual finish time
-	qi.vft = fi.last_vft + ((qi.size << 8) / (uint64(qi.weight) + 1))
-	fi.last_vft = qi.vft
+	hi.vft = fi.last_vft + ((hi.size << 8) / (uint64(hi.weight) + 1))
+	fi.last_vft = hi.vft
 
 	// Add the item's size to the flow
-	fi.size += qi.size
+	fi.size += hi.size
 	// Subtract it's size from pendSize since it is no longer pending
-	fi.pendSize -= qi.size
+	fi.pendSize -= hi.size
 
-	if q.size+qi.size > q.maxQueueSize {
+	if q.size+hi.size > q.maxQueueSize {
 		/*
 			The queue is full, place our request in the overflow heap.
 			Unlike the main heap, the overflow heap is strictly prioritized by
@@ -311,31 +311,31 @@ func (q *WeightedFairQueue) Queue(item interface{}) bool {
 			a lower priority flow if the incoming rate of the higer priority flow exceeds
 			the total outgoing rate.
 		*/
-		oqi := getOverflowQueueItem()
-		oqi.qi = qi
-		oqi.arrord = q.ovfcnt
+		ohi := getOverflowHeapItem()
+		ohi.hi = hi
+		ohi.arrord = q.ovfcnt
 		q.ovfcnt++
-		oqi.wg.Add(1)
-		if q.next_oi == nil {
-			q.next_oi = oqi
+		ohi.wg.Add(1)
+		if q.next_ohi == nil {
+			q.next_ohi = ohi
 		} else {
-			if oqi.less(q.next_oi) {
-				heap.Push(&q.overflow, q.next_oi)
-				q.next_oi = oqi
+			if ohi.less(q.next_ohi) {
+				heap.Push(&q.overflow, q.next_ohi)
+				q.next_ohi = ohi
 			} else {
-				heap.Push(&q.overflow, oqi)
+				heap.Push(&q.overflow, ohi)
 			}
 		}
 		q.lock.Unlock()
-		oqi.wg.Wait()
-		putOverflowQueueItem(oqi)
+		ohi.wg.Wait()
+		putOverflowHeapItem(ohi)
 		if q.closed {
 			return false
 		}
 	} else {
-		q.size += qi.size
+		q.size += hi.size
 		// The queue has room, place our item in the main heap
-		heap.Push(&q.items, qi)
+		heap.Push(&q.items, hi)
 		q.cond.Signal()
 		q.lock.Unlock()
 	}
@@ -348,7 +348,7 @@ func (q *WeightedFairQueue) Queue(item interface{}) bool {
 // removed from the queue or nil and false, if the queue is empty and closed.
 // DeQueue is safe for concurrent use.
 //
-func (q *WeightedFairQueue) DeQueue() (interface{}, bool) {
+func (q *Queue) DeQueue() (interface{}, bool) {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -364,31 +364,31 @@ func (q *WeightedFairQueue) DeQueue() (interface{}, bool) {
 		return nil, false
 	}
 
-	qi := heap.Pop(&q.items).(*queueItem)
-	item := qi.value
-	q.vt = qi.vft
-	qi.fi.size -= qi.size
-	q.size -= qi.size
-	if qi.fi.size == 0 && qi.fi.pendSize == 0 {
+	hi := heap.Pop(&q.items).(*heapItem)
+	item := hi.value
+	q.vt = hi.vft
+	hi.fi.size -= hi.size
+	q.size -= hi.size
+	if hi.fi.size == 0 && hi.fi.pendSize == 0 {
 		// The flow is empty (i.e. inactive), delete it
-		delete(q.flows, qi.key)
-		putFlowInfo(qi.fi)
-		putQueueItem(qi)
+		delete(q.flows, hi.key)
+		putFlowInfo(hi.fi)
+		putHeapItem(hi)
 	} else {
-		qi.fi.cond.Signal()
-		putQueueItem(qi)
+		hi.fi.cond.Signal()
+		putHeapItem(hi)
 	}
 
 	if !q.closed {
 		// While there is room in the queue move items from the overflow to the main heap.
-		for q.next_oi != nil && q.size+q.next_oi.qi.size <= q.maxQueueSize {
-			q.size += q.next_oi.qi.size
-			heap.Push(&q.items, q.next_oi.qi)
-			q.next_oi.wg.Done()
+		for q.next_ohi != nil && q.size+q.next_ohi.hi.size <= q.maxQueueSize {
+			q.size += q.next_ohi.hi.size
+			heap.Push(&q.items, q.next_ohi.hi)
+			q.next_ohi.wg.Done()
 			if q.overflow.Len() > 0 {
-				q.next_oi = heap.Pop(&q.overflow).(*overflowQueueItem)
+				q.next_ohi = heap.Pop(&q.overflow).(*overflowHeapItem)
 			} else {
-				q.next_oi = nil
+				q.next_ohi = nil
 			}
 		}
 	}
@@ -396,14 +396,14 @@ func (q *WeightedFairQueue) DeQueue() (interface{}, bool) {
 	return item, true
 }
 
-func (q *WeightedFairQueue) Close() {
+func (q *Queue) Close() {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 	q.closed = true
 	// All overflow requests get flushed
-	for q.next_oi != nil {
-		q.next_oi.wg.Done()
-		q.next_oi = q.overflow.Pop().(*overflowQueueItem)
+	for q.next_ohi != nil {
+		q.next_ohi.wg.Done()
+		q.next_ohi = q.overflow.Pop().(*overflowHeapItem)
 	}
 	// Wake up all those waiting to get into a flow queue
 	for _, fi := range q.flows {
