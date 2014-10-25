@@ -10,7 +10,7 @@ import (
  *
  *****************************************************************************/
 
-// An implementatino of this interface is passed to NewQueue
+// An implementation of this interface is passed to NewQueue
 // and used to obtain properties of items passed to Queue().
 // Each method will be called only once per Queue()/item call
 //
@@ -27,7 +27,8 @@ type Interface interface {
 
 	// The weight/priority of the item. A higher value represents a higher
 	// priority. All items with a specific key should (but are not required to)
-	// have the same weight.
+	// have the same weight. Internally the Queue add 1 to the weight so that
+	// weight range is shifted from 0-255 to 1-256.
 	Weight(item interface{}) uint8
 }
 
@@ -167,6 +168,8 @@ type flowInfo struct {
 	last_vft uint64
 	size     uint64
 	pendSize uint64
+	weight   uint8
+	inv_w    uint64
 }
 
 var fi_pool sync.Pool
@@ -205,9 +208,13 @@ func init() {
 // share their portion of the throughput evenly.
 // Each weight "class" receives a portion of the total throughput according to
 // the following the formula RWi/W1 + W2 ... + WN where R = total throughput
-// and W1 through WN are the weights.
-// The actual wieghted cost of an item is calculated as C = (S * 256) / (1 + W)
-// where S = the size of the item, and W = the weight of the item.
+// and W1 through WN are the weights of the individual flows.
+// If the total size of all items that passed through the queue was 10,000, and
+// the weights of each of 3 flows was 1, 4 and 18, then the portion of the total
+// that was dedicated to each flow would be 10000*1/(1+4+18) = 435 (4.35%),
+// 10000*4/(1+4+18) = 1739 (17.39%) and 10000*18/(1+4+18) = 7826 (78.26%).
+//
+//
 //
 type Queue struct {
 	lock         sync.Mutex
@@ -223,14 +230,20 @@ type Queue struct {
 	ovfcnt       uint64
 	vt           uint64
 	size         uint64
+	wsum         uint64
+	inv_wsum     uint64
 }
+
+const (
+	scaledOne uint64 = 1 << 16
+)
 
 // Create a new Queue instance.
 // If maxFlowSize > maxQueueSize or if helper is nil then it will panic.
 // The maxFlowSize value limits the total size of all items that can be queued in a single flow.
 // The maxQueueSize value limits the total size of all items that can be in the queue.
-// It is recomeneded that maxQueueSize be set to maxFlowSize*<Max # of flows>, and
-// maxFlowSize must be larger than the largest item ti be placed in the queue.
+// It is recomeneded that maxQueueSize be set to maxFlowSize*<Max # of expected flows>, and
+// that maxFlowSize be at least twice the largest expected item size.
 //
 func NewQueue(maxQueueSize, maxFlowSize uint64, helper Interface) *Queue {
 	if maxFlowSize > maxQueueSize {
@@ -264,6 +277,10 @@ func (q *Queue) Queue(item interface{}) bool {
 	hi.size = q.helper.Size(item)
 	hi.weight = q.helper.Weight(item)
 
+	if hi.size == 0 {
+		panic("Item size is zero")
+	}
+
 	if hi.size > q.maxFlowSize {
 		panic("Item size is larger than MaxFlowSize")
 	}
@@ -281,7 +298,11 @@ func (q *Queue) Queue(item interface{}) bool {
 		fi = getFlowInfo()
 		fi.cond.L = &q.lock
 		fi.last_vft = q.vt
+		fi.weight = hi.weight + 1
+		fi.inv_w = scaledOne / uint64(fi.weight)
 		q.flows[hi.key] = fi
+		q.wsum += uint64(fi.weight)
+		q.inv_wsum = scaledOne / uint64(q.wsum)
 	}
 	hi.fi = fi
 
@@ -300,7 +321,7 @@ func (q *Queue) Queue(item interface{}) bool {
 	}
 
 	// Calculate the items virtual finish time
-	hi.vft = fi.last_vft + ((hi.size << 8) / (uint64(hi.weight) + 1))
+	hi.vft = fi.last_vft + hi.size*fi.inv_w
 	fi.last_vft = hi.vft
 
 	// Add the item's size to the flow
@@ -313,7 +334,7 @@ func (q *Queue) Queue(item interface{}) bool {
 			The queue is full, place our request in the overflow heap.
 			Unlike the main heap, the overflow heap is strictly prioritized by
 			weight and arrival order. A higher priority flow could completely starve out
-			a lower priority flow if the incoming rate of the higer priority flow exceeds
+			a lower priority flow if the incoming rate of the higher priority flow exceeds
 			the total outgoing rate.
 		*/
 		ohi := getOverflowHeapItem()
@@ -371,12 +392,14 @@ func (q *Queue) DeQueue() (interface{}, bool) {
 
 	hi := heap.Pop(&q.items).(*heapItem)
 	item := hi.value
-	q.vt = hi.vft
+	q.vt += hi.size * q.inv_wsum
 	hi.fi.size -= hi.size
 	q.size -= hi.size
 	if hi.fi.size == 0 && hi.fi.pendSize == 0 {
 		// The flow is empty (i.e. inactive), delete it
 		delete(q.flows, hi.key)
+		q.wsum += uint64(hi.fi.weight)
+		q.inv_wsum = scaledOne / uint64(q.wsum)
 		putFlowInfo(hi.fi)
 		putHeapItem(hi)
 	} else {

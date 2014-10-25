@@ -1,6 +1,7 @@
 package wfq
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"runtime"
@@ -16,6 +17,10 @@ type item struct {
 	seq    uint64
 }
 
+func (i *item) String() string {
+	return fmt.Sprintf("{%d %d %d %d}", i.key, i.size, i.weight, i.seq)
+}
+
 type helper struct{}
 
 func (h *helper) Key(i interface{}) uint64 {
@@ -28,6 +33,88 @@ func (h *helper) Size(i interface{}) uint64 {
 
 func (h *helper) Weight(i interface{}) uint8 {
 	return i.(*item).weight
+}
+
+type flowDesc struct {
+	// In
+	ftotal uint64 // Total units in flow
+	imin   uint64 // Min item size
+	imax   uint64 // Max item size
+	weight uint8  // Flow weight
+
+	// Out
+	idealPercent  float64
+	actualPercent float64
+}
+
+func genFlow(queue *Queue, desc *flowDesc, key uint64, done_wg *sync.WaitGroup) {
+	for i, t := uint64(1), uint64(0); t < desc.ftotal; i++ {
+		//time.Sleep(time.Microsecond)
+		it := new(item)
+		it.key = key
+		if desc.imin == desc.imax {
+			it.size = desc.imax
+		} else {
+			it.size = desc.imin + uint64(rand.Int63n(int64(desc.imax-desc.imin)))
+		}
+		if t+it.size > desc.ftotal {
+			it.size = desc.ftotal - t
+		}
+		t += it.size
+		it.weight = desc.weight
+		it.seq = i
+		queue.Queue(it)
+	}
+	(*done_wg).Done()
+}
+
+func consumeQueue(queue *Queue, descs []flowDesc) (float64, error) {
+	active := make(map[uint64]bool)
+	var total uint64
+	acnt := make(map[uint64]uint64)
+	cnt := make(map[uint64]uint64)
+	seqs := make(map[uint64]uint64)
+
+	var wsum uint64
+	for _, d := range descs {
+		wsum += uint64(d.weight + 1)
+	}
+
+	for i, ok := queue.DeQueue(); ok; i, ok = queue.DeQueue() {
+		time.Sleep(time.Microsecond) // Simulate constrained bandwidth
+		it := i.(*item)
+		seq := seqs[it.key]
+		if seq+1 != it.seq {
+			return 0, fmt.Errorf("Item for flow %d came out of queue out-of-order: expected %d, got %d", it.key, seq+1, it.seq)
+		}
+		seqs[it.key] = it.seq
+
+		if cnt[it.key] == 0 {
+			active[it.key] = true
+		}
+		cnt[it.key] += it.size
+
+		if len(active) == len(descs) {
+			acnt[it.key] += it.size
+			total += it.size
+		}
+
+		if cnt[it.key] == descs[it.key].ftotal {
+			delete(active, it.key)
+		}
+	}
+
+	var variance float64
+	for key := uint64(0); key < uint64(len(descs)); key++ {
+		descs[key].idealPercent = (((float64(total) * float64(descs[key].weight+1)) / float64(wsum)) / float64(total)) * 100
+		descs[key].actualPercent = (float64(acnt[key]) / float64(total)) * 100
+		x := descs[key].idealPercent - descs[key].actualPercent
+		x *= x
+		variance += x
+	}
+
+	stdDev := math.Sqrt(variance)
+	return stdDev, nil
 }
 
 func TestSingleFlow(t *testing.T) {
@@ -55,28 +142,29 @@ func TestSingleFlow(t *testing.T) {
 	}
 }
 
-func TestMultiFlow(t *testing.T) {
+func TestUniformMultiFlow(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewQueue(100, 10, &helper{})
+	wfq := NewQueue(1000, 10, &helper{})
 
 	var swg sync.WaitGroup
 	var wg sync.WaitGroup
-	numFlows := 20
+	var flows = []flowDesc{
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+	}
+
 	swg.Add(1)
-	wg.Add(numFlows)
-	for n := 0; n < numFlows; n++ {
-		go func(key uint64) {
-			swg.Wait()
-			for i := 1; i < 100; i++ {
-				it := new(item)
-				it.key = key
-				it.size = 1
-				it.weight = 0
-				it.seq = uint64(i)
-				wfq.Queue(it)
-			}
-			wg.Done()
-		}(uint64(n))
+	wg.Add(len(flows))
+	for n := 0; n < len(flows); n++ {
+		go genFlow(wfq, &flows[n], uint64(n), &wg)
 	}
 
 	go func() {
@@ -85,138 +173,44 @@ func TestMultiFlow(t *testing.T) {
 	}()
 	swg.Done()
 
-	time.Sleep(time.Millisecond)
+	stdDev, err := consumeQueue(wfq, flows)
 
-	var tick uint64 = 1
-	lastTicks := make(map[uint64]uint64)
-	deltas := make(map[uint64][]uint64)
-	seqs := make(map[uint64]uint64)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
-	for i, ok := wfq.DeQueue(); ok; i, ok = wfq.DeQueue() {
-		it := i.(*item)
-		seq := seqs[it.key]
-		if seq+1 != it.seq {
-			t.Fatalf("Item came out of queue out-of-order: expected %d, got %d", seq+1, it.seq)
+	if stdDev > 0.1 {
+		for k, d := range flows {
+			t.Logf("For flow %d: Expected %v%%, got %v%%", k, d.idealPercent, d.actualPercent)
 		}
-		seqs[it.key] = it.seq
-		lastTick := lastTicks[it.key]
-		if lastTick != 0 {
-			deltas[it.key] = append(deltas[it.key], tick-lastTick)
-		}
-		lastTicks[it.key] = tick
-		tick++
-	}
-
-	deltaAvgs := make(map[uint64]float64)
-	for n := uint64(0); n < uint64(numFlows); n++ {
-		var avg float64
-		for _, d := range deltas[n] {
-			avg += float64(d)
-		}
-		avg /= float64(len(deltas[n]))
-		deltaAvgs[n] = avg
-	}
-
-	var avg float64
-	for _, a := range deltaAvgs {
-		avg += a
-	}
-	avg /= float64(numFlows)
-	var variance float64
-	for _, a := range deltaAvgs {
-		x := float64(numFlows) - a
-		x *= x
-		variance += x
-	}
-	variance /= float64(numFlows)
-	stdDev := math.Sqrt(variance)
-
-	// Typically the StdDev will be less than 0.1 but it is still possible
-	// to occasionally see a value higher than 0.5
-
-	if stdDev > 0.5 {
-		t.Fatalf("StdDev was expected to be < 0.5 but got %v", stdDev)
+		t.Fatalf("StdDev was expected to be < 0.1 but got %v", stdDev)
 	}
 }
 
-func TestMultiFlowWeighted(t *testing.T) {
+func TestUniformMultiFlowWithRandomItemSize(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewQueue(1000, 12, &helper{})
-
-	var wg sync.WaitGroup
-	numFlows := 10
-	wg.Add(numFlows + 1)
-	for n := 0; n < numFlows; n++ {
-		go func(key uint64) {
-			for i := 1; i < 100; i++ {
-				it := new(item)
-				it.key = key
-				it.size = 4
-				it.weight = 0
-				it.seq = uint64(i)
-				wfq.Queue(it)
-			}
-			wg.Done()
-		}(uint64(n))
-	}
-
-	go func(key uint64) {
-		for i := 1; i < 200; i++ {
-			it := new(item)
-			it.key = key
-			it.size = 1
-			it.weight = 255
-			it.seq = uint64(i)
-			wfq.Queue(it)
-		}
-		wg.Done()
-	}(uint64(11))
-
-	go func() {
-		wg.Wait()
-		wfq.Close()
-	}()
-
-	seqs := make(map[uint64]uint64)
-	ft := make(map[uint64]time.Time)
-	for i, ok := wfq.DeQueue(); ok; i, ok = wfq.DeQueue() {
-		it := i.(*item)
-		seq := seqs[it.key]
-		if seq+1 != it.seq {
-			t.Fatalf("Item came out of queue out-of-order: expected %d, got %d", seq+1, it.seq)
-		}
-		seqs[it.key] = it.seq
-		ft[it.key] = time.Now()
-	}
-	for n := uint64(0); n < uint64(numFlows); n++ {
-		if ft[n].Before(ft[11]) {
-			t.Fatalf("High priority flow finished %v AFTER low priority flow", ft[11].Sub(ft[n]))
-		}
-	}
-}
-
-func TestMultiFlowMultiWeight(t *testing.T) {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	wfq := NewQueue(100, 10, &helper{})
+	wfq := NewQueue(1000, 20, &helper{})
 
 	var swg sync.WaitGroup
 	var wg sync.WaitGroup
-	numFlows := 20
+	var flows = []flowDesc{
+		// ftotal, imin, imax, weight, ideal, actual
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+		{10000, 1, 10, 0, 0, 0},
+	}
+
 	swg.Add(1)
-	wg.Add(numFlows)
-	for n := 0; n < numFlows; n++ {
-		go func(key uint64) {
-			swg.Wait()
-			for i := 1; i < 100; i++ {
-				it := new(item)
-				it.key = key
-				it.size = 1
-				it.weight = uint8(n)
-				it.seq = uint64(i)
-				wfq.Queue(it)
-			}
-			wg.Done()
-		}(uint64(n))
+	wg.Add(len(flows))
+	for n := 0; n < len(flows); n++ {
+		go genFlow(wfq, &flows[n], uint64(n), &wg)
 	}
 
 	go func() {
@@ -225,16 +219,108 @@ func TestMultiFlowMultiWeight(t *testing.T) {
 	}()
 	swg.Done()
 
-	time.Sleep(time.Millisecond)
+	stdDev, err := consumeQueue(wfq, flows)
 
-	seqs := make(map[uint64]uint64)
-	for i, ok := wfq.DeQueue(); ok; i, ok = wfq.DeQueue() {
-		it := i.(*item)
-		seq := seqs[it.key]
-		if seq+1 != it.seq {
-			t.Fatalf("Item came out of queue out-of-order: expected %d, got %d", seq+1, it.seq)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	if stdDev > 0.1 {
+		for k, d := range flows {
+			t.Logf("For flow %d: Expected %v%%, got %v%%", k, d.idealPercent, d.actualPercent)
 		}
-		seqs[it.key] = it.seq
+		t.Fatalf("StdDev was expected to be < 0.1 but got %v", stdDev)
+	}
+}
+
+func TestMultiFlowWithOneHiPriFlow(t *testing.T) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	wfq := NewQueue(1000, 10, &helper{})
+
+	var swg sync.WaitGroup
+	var wg sync.WaitGroup
+	var flows = []flowDesc{
+		{10000, 1, 1, 32, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+		{1000, 1, 1, 0, 0, 0},
+	}
+
+	swg.Add(1)
+	wg.Add(len(flows))
+	for n := 0; n < len(flows); n++ {
+		go genFlow(wfq, &flows[n], uint64(n), &wg)
+	}
+
+	go func() {
+		wg.Wait()
+		wfq.Close()
+	}()
+	swg.Done()
+
+	stdDev, err := consumeQueue(wfq, flows)
+
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	if stdDev > 0.1 {
+		for k, d := range flows {
+			t.Logf("For flow %d: Expected %v%%, got %v%%", k, d.idealPercent, d.actualPercent)
+		}
+		t.Fatalf("StdDev was expected to be < 0.1 but got %v", stdDev)
+	}
+}
+
+func TestMixedWeightMultiFlowWithRandomItemSize(t *testing.T) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	wfq := NewQueue(1000, 20, &helper{})
+
+	var swg sync.WaitGroup
+	var wg sync.WaitGroup
+	var flows = []flowDesc{
+		// ftotal, imin, imax, weight, ideal, actual
+		{10000, 1, 10, 1, 0, 0},
+		{10000, 1, 10, 10, 0, 0},
+		{10000, 1, 10, 3, 0, 0},
+		{10000, 1, 10, 1, 0, 0},
+		{10000, 1, 10, 1, 0, 0},
+		{10000, 1, 10, 4, 0, 0},
+		{10000, 1, 10, 1, 0, 0},
+		{10000, 1, 10, 1, 0, 0},
+		{10000, 1, 10, 7, 0, 0},
+		{10000, 1, 10, 1, 0, 0},
+	}
+
+	swg.Add(1)
+	wg.Add(len(flows))
+	for n := 0; n < len(flows); n++ {
+		go genFlow(wfq, &flows[n], uint64(n), &wg)
+	}
+
+	go func() {
+		wg.Wait()
+		wfq.Close()
+	}()
+	swg.Done()
+
+	stdDev, err := consumeQueue(wfq, flows)
+
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	if stdDev > 0.1 {
+		for k, d := range flows {
+			t.Logf("For flow %d: Expected %v%%, got %v%%", k, d.idealPercent, d.actualPercent)
+		}
+		t.Fatalf("StdDev was expected to be < 0.1 but got %v", stdDev)
 	}
 }
 
